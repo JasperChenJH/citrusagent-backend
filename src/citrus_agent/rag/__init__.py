@@ -1,15 +1,13 @@
-"""RAG 检索增强生成链路。
+"""RAG 入库与检索调用入口。
 
 职责：
-    1. 负责问题改写、知识检索、上下文拼接、引用来源整理。
-    2. 连接 `llm` 和 `vectorstores`。
-    3. 管理农业问答 Prompt 模板。
+    1. 给后端提供文档入库、向量删除、向量检索的统一调用入口。
+    2. 连接 `services`、`vectorstores` 和后续可能接入的 LLM 层。
+    3. 当前版本只做向量检索，不做重排、不调用 LLM、不拼接最终回答。
 
-建议文件：
-    - chain.py：RAG 主流程。
-    - retriever.py：检索器封装。
-    - prompts.py：Prompt 模板。
-    - rerank.py：重排逻辑。
+主要文件：
+    - rag_api.py：后端调用门面。
+    - retriever.py：向量检索器封装。
 
 注意：
     RAG 层不处理 HTTP 请求，也不直接返回前端响应格式。

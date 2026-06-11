@@ -16,8 +16,12 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+PROJECT_ROOT_PATH = Path(__file__).resolve().parents[3]
+ENV_FILE_PATH = PROJECT_ROOT_PATH / ".env"
 
 
 class Settings(BaseSettings):
@@ -30,7 +34,7 @@ class Settings(BaseSettings):
     app_name: str = Field(default="CitrusAgent", description="项目名称")
     app_env: str = Field(default="local", description="运行环境，例如 local、dev、prod")
     project_root: Path = Field(
-        default=Path("G:/py_workplace/CitrusAgent"),
+        default=PROJECT_ROOT_PATH,
         description="当前项目根目录",
     )
 
@@ -46,17 +50,68 @@ class Settings(BaseSettings):
     qdrant_url: str = Field(default="http://localhost:6333", description="Qdrant 服务地址")
     qdrant_api_key: str = Field(default="", description="Qdrant API Key，本地可为空")
     qdrant_collection: str = Field(
-        default="agriculture_knowledge",
-        description="农业知识库向量集合名称",
+        default="orange_knowledge",
+        description="橘子知识库向量集合名称",
     )
+    qdrant_distance: str = Field(
+        default="Cosine",
+        description="Qdrant 向量距离算法，第一版默认使用 Cosine",
+    )
+
+    embedding_provider: str = Field(
+        default="api",
+        description="embedding 提供方，支持 api、local_bge、fixed",
+    )
+    embedding_api_key: str = Field(
+        default="",
+        description="embedding API Key；只用于向量化，不用于聊天模型",
+    )
+    embedding_base_url: str = Field(
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        description="embedding API 地址，默认使用阿里云 DashScope OpenAI 兼容模式",
+    )
+    embedding_model: str = Field(
+        default="text-embedding-v4",
+        description="embedding API 模型名称",
+    )
+    embedding_dimensions: int = Field(
+        default=1024,
+        description="embedding API 返回向量维度",
+    )
+    embedding_model_name: str = Field(
+        default="text-embedding-v4",
+        description="embedding 模型名称，兼容本地模型和 API 模型",
+    )
+    embedding_vector_size: int = Field(
+        default=1024,
+        description="embedding 向量维度，必须和 Qdrant collection 的向量维度一致",
+    )
+
+    retrieval_top_k: int = Field(default=30, description="Qdrant 第一阶段召回数量")
+    chunk_size: int = Field(default=500, description="知识片段目标字符数")
+    chunk_overlap: int = Field(default=80, description="相邻知识片段重叠字符数")
 
     database_url: str = Field(
-        default="sqlite:///./citrus_agent.db",
+        default="mysql+pymysql://root:replace-me@localhost:3306/CitrusAgent?charset=utf8mb4",
         description="关系型数据库连接地址",
     )
+    mysql_host: str = Field(default="localhost", description="MySQL 主机地址")
+    mysql_port: int = Field(default=3306, description="MySQL 端口")
+    mysql_user: str = Field(default="root", description="MySQL 用户名")
+    mysql_password: str = Field(default="", description="MySQL 密码")
+    mysql_database: str = Field(default="CitrusAgent", description="MySQL 数据库名")
+
+    @field_validator("chunk_overlap")
+    @classmethod
+    def validate_chunk_overlap(cls, value: int) -> int:
+        """校验分块重叠长度，避免出现负数。"""
+
+        if value < 0:
+            raise ValueError("CHUNK_OVERLAP 不能小于 0")
+        return value
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=ENV_FILE_PATH,
         env_file_encoding="utf-8",
         extra="ignore",
     )
