@@ -29,6 +29,8 @@ class QdrantStore:
         self.collection_name = collection_name or settings.qdrant_collection
         self.vector_size = vector_size or settings.embedding_vector_size
         self.distance = distance or settings.qdrant_distance
+        self.dense_vector_name = settings.qdrant_dense_vector_name
+        self.sparse_vector_name = settings.qdrant_sparse_vector_name
         self.client = self._create_client()
 
     def ensure_collection(self) -> None:
@@ -50,6 +52,34 @@ class QdrantStore:
                 size=self.vector_size,
                 distance=self._distance_value(),
             ),
+        )
+        self._create_payload_indexes()
+
+    def ensure_hybrid_collection(self) -> None:
+        """确保 BGE-M3 hybrid collection 存在。
+
+        hybrid collection 使用 named dense vector 和 sparse vector：
+        - dense：BGE-M3 1024 维语义向量。
+        - sparse：BGE-M3 lexical_weights 稀疏向量。
+        """
+
+        from qdrant_client import models
+
+        existing = [item.name for item in self.client.get_collections().collections]
+        if self.collection_name in existing:
+            return
+
+        self.client.create_collection(
+            collection_name=self.collection_name,
+            vectors_config={
+                self.dense_vector_name: models.VectorParams(
+                    size=self.vector_size,
+                    distance=self._distance_value(),
+                )
+            },
+            sparse_vectors_config={
+                self.sparse_vector_name: models.SparseVectorParams(),
+            },
         )
         self._create_payload_indexes()
 
@@ -80,6 +110,40 @@ class QdrantStore:
             ]
             self.client.upsert(collection_name=self.collection_name, points=points)
 
+    def upsert_hybrid_chunks(self, chunks: list[KnowledgeChunk], batch_size: int = 128) -> None:
+        """批量写入 BGE-M3 dense + sparse 知识片段。"""
+
+        if not chunks:
+            return
+
+        from qdrant_client import models
+
+        self.ensure_hybrid_collection()
+
+        for start in range(0, len(chunks), batch_size):
+            batch = chunks[start : start + batch_size]
+            points = []
+            for chunk in batch:
+                if not chunk.dense_vector:
+                    raise ValueError(f"chunk 缺少 dense_vector：{chunk.payload.chunk_id}")
+                if chunk.sparse_vector is None:
+                    raise ValueError(f"chunk 缺少 sparse_vector：{chunk.payload.chunk_id}")
+
+                points.append(
+                    models.PointStruct(
+                        id=chunk.point_id,
+                        vector={
+                            self.dense_vector_name: chunk.dense_vector,
+                            self.sparse_vector_name: models.SparseVector(
+                                indices=chunk.sparse_vector.indices,
+                                values=chunk.sparse_vector.values,
+                            ),
+                        },
+                        payload=chunk.payload.to_dict(),
+                    )
+                )
+            self.client.upsert(collection_name=self.collection_name, points=points)
+
     def delete_by_document_id(self, document_id: int) -> None:
         """按 MySQL documents.id 删除旧片段。
 
@@ -89,6 +153,30 @@ class QdrantStore:
         from qdrant_client import models
 
         self.ensure_collection()
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="document_id",
+                            match=models.MatchValue(value=document_id),
+                        )
+                    ]
+                )
+            ),
+        )
+
+    def delete_by_document_id_from_hybrid(self, document_id: int) -> None:
+        """按 document_id 删除 hybrid collection 中的旧片段。
+
+        注意：hybrid collection 必须用 ensure_hybrid_collection 创建。
+        如果误用 ensure_collection，会创建成 dense-only collection，后续写入 sparse 会失败。
+        """
+
+        from qdrant_client import models
+
+        self.ensure_hybrid_collection()
         self.client.delete(
             collection_name=self.collection_name,
             points_selector=models.FilterSelector(

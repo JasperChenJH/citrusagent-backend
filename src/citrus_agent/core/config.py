@@ -53,10 +53,16 @@ class Settings(BaseSettings):
         default="orange_knowledge",
         description="橘子知识库向量集合名称",
     )
+    qdrant_hybrid_collection: str = Field(
+        default="orange_knowledge_hybrid",
+        description="BGE-M3 hybrid 入库使用的 Qdrant 集合名称",
+    )
     qdrant_distance: str = Field(
         default="Cosine",
         description="Qdrant 向量距离算法，第一版默认使用 Cosine",
     )
+    qdrant_dense_vector_name: str = Field(default="dense", description="Qdrant dense 向量名称")
+    qdrant_sparse_vector_name: str = Field(default="sparse", description="Qdrant sparse 向量名称")
 
     embedding_provider: str = Field(
         default="api",
@@ -86,6 +92,12 @@ class Settings(BaseSettings):
         default=1024,
         description="embedding 向量维度，必须和 Qdrant collection 的向量维度一致",
     )
+    bge_m3_url: str = Field(
+        default="http://172.21.72.18:8001",
+        description="BGE-M3 embedding 服务地址，返回 dense + sparse",
+    )
+    bge_m3_timeout: int = Field(default=60, description="BGE-M3 服务请求超时时间，单位秒")
+    bge_m3_batch_size: int = Field(default=8, description="调用 BGE-M3 服务时的默认批大小")
 
     retrieval_top_k: int = Field(default=30, description="Qdrant 第一阶段召回数量")
     chunk_size: int = Field(default=500, description="知识片段目标字符数")

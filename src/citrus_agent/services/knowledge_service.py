@@ -17,6 +17,7 @@ from src.citrus_agent.pojo.knowledge import (
 )
 from src.citrus_agent.services.document_parser import DocumentParser, ParsedDocument
 from src.citrus_agent.vectorstores.embeddings import EmbeddingProvider, create_embedding_provider
+from src.citrus_agent.vectorstores.embeddings import BgeM3ApiEmbeddingProvider
 from src.citrus_agent.vectorstores.qdrant import QdrantStore
 
 
@@ -190,3 +191,79 @@ class KnowledgeIngestor:
 
         digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         return f"{kb_id}:{document_id}:{chunk_index}:{digest}"
+
+
+class HybridKnowledgeIngestor(KnowledgeIngestor):
+    """BGE-M3 服务器版 hybrid 入库编排器。
+
+    该类复用 KnowledgeIngestor 的文档解析、清洗、分块和 payload 构造逻辑，
+    只把 embedding 和 Qdrant 写入替换成 dense + sparse 版本。
+    """
+
+    def __init__(
+        self,
+        parser: DocumentParser | None = None,
+        embedding_provider: BgeM3ApiEmbeddingProvider | None = None,
+        qdrant_store: QdrantStore | None = None,
+        chunk_size: int | None = None,
+        chunk_overlap: int | None = None,
+    ) -> None:
+        self.parser = parser or DocumentParser()
+        self.embedding_provider = embedding_provider or BgeM3ApiEmbeddingProvider()
+        self.qdrant_store = qdrant_store or QdrantStore(
+            collection_name=settings.qdrant_hybrid_collection,
+            vector_size=self.embedding_provider.vector_size,
+        )
+        self.chunk_size = chunk_size or settings.chunk_size
+        self.chunk_overlap = chunk_overlap if chunk_overlap is not None else settings.chunk_overlap
+
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("CHUNK_OVERLAP 必须小于 CHUNK_SIZE")
+
+    def ingest_document(
+        self,
+        document: DocumentEntity,
+        replace_existing: bool = True,
+    ) -> DocumentIngestResult:
+        """使用 BGE-M3 dense + sparse 入库一个文档。"""
+
+        try:
+            parsed_document = self.parser.parse_file(document.stored_path)
+            chunks = self._build_chunks(
+                document=parsed_document,
+                kb_id=document.kb_id,
+                document_id=document.id,
+                file_name=document.original_filename,
+            )
+            if not chunks:
+                raise ValueError("文档没有生成有效知识片段")
+
+            embeddings = self.embedding_provider.embed_hybrid_texts(
+                [chunk.text for chunk in chunks]
+            )
+            if len(embeddings) != len(chunks):
+                raise ValueError("BGE-M3 返回数量和知识片段数量不一致")
+
+            for chunk, embedding in zip(chunks, embeddings):
+                chunk.dense_vector = embedding.dense
+                chunk.sparse_vector = embedding.sparse
+
+            if replace_existing:
+                self.qdrant_store.delete_by_document_id_from_hybrid(document.id)
+            self.qdrant_store.upsert_hybrid_chunks(chunks)
+
+            return DocumentIngestResult(
+                document_id=document.id,
+                kb_id=document.kb_id,
+                success=True,
+                chunk_count=len(chunks),
+                error_message="",
+            )
+        except Exception as exc:
+            return DocumentIngestResult(
+                document_id=document.id,
+                kb_id=document.kb_id,
+                success=False,
+                chunk_count=0,
+                error_message=str(exc),
+            )

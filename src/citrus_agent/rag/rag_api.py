@@ -13,7 +13,7 @@ from src.citrus_agent.pojo.knowledge import (
     DocumentSearchResult,
 )
 from src.citrus_agent.rag.retriever import CitrusRetriever
-from src.citrus_agent.services.knowledge_service import KnowledgeIngestor
+from src.citrus_agent.services.knowledge_service import HybridKnowledgeIngestor, KnowledgeIngestor
 from src.citrus_agent.vectorstores.qdrant import QdrantStore
 
 
@@ -22,17 +22,20 @@ class RAGApi:
 
     这个类只做很薄的一层封装：
     1. 文档入库：DocumentEntity -> DocumentIngestResult。
-    2. 文档向量删除：按 document_id 删除 Qdrant 中旧 chunk。
-    3. 知识库向量删除：按 kb_id 删除 Qdrant 中该知识库的所有 chunk。
-    4. 知识检索：传 kb_id 时按知识库过滤，不传 kb_id 时全库检索。
+    2. BGE-M3 hybrid 文档入库：DocumentEntity -> DocumentIngestResult。
+    3. 文档向量删除：按 document_id 删除 Qdrant 中旧 chunk。
+    4. 知识库向量删除：按 kb_id 删除 Qdrant 中该知识库的所有 chunk。
+    5. 知识检索：传 kb_id 时按知识库过滤，不传 kb_id 时全库检索。
     """
     def __init__(
         self,
         ingestor: KnowledgeIngestor | None = None,
+        hybrid_ingestor: HybridKnowledgeIngestor | None = None,
         retriever: CitrusRetriever | None = None,
         qdrant_store: QdrantStore | None = None,
     ) -> None:
         self.ingestor = ingestor or KnowledgeIngestor()
+        self.hybrid_ingestor = hybrid_ingestor
         self.retriever = retriever or CitrusRetriever()
         self.qdrant_store = qdrant_store or QdrantStore()
 
@@ -52,6 +55,23 @@ class RAGApi:
         """
 
         return self.ingestor.ingest_document(
+            document=document,
+            replace_existing=replace_existing,
+        )
+
+    def ingest_document_with_bge_m3(
+        self,
+        document: DocumentEntity,
+        replace_existing: bool = True,
+    ) -> DocumentIngestResult:
+        """使用服务器 BGE-M3 dense + sparse 入库一个文档。
+
+        原来的 ingest_document() 不变，继续用于本地 API embedding 测试。
+        该方法只用于正式服务器 hybrid collection 入库。
+        """
+
+        hybrid_ingestor = self.hybrid_ingestor or HybridKnowledgeIngestor()
+        return hybrid_ingestor.ingest_document(
             document=document,
             replace_existing=replace_existing,
         )

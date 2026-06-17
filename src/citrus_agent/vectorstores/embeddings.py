@@ -7,9 +7,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import json
 from typing import Sequence
+from urllib import request as url_request
+from urllib.error import HTTPError, URLError
 
 from src.citrus_agent.core.config import settings
+from src.citrus_agent.pojo.knowledge import HybridEmbedding, SparseEmbedding
 
 
 class EmbeddingProvider(ABC):
@@ -150,6 +154,104 @@ class LocalBgeEmbeddingProvider(EmbeddingProvider):
             self._model = SentenceTransformer(self.model_name)
 
         return self._model
+
+
+class BgeM3ApiEmbeddingProvider:
+    """服务器版 BGE-M3 embedding 服务客户端。
+
+    该客户端调用独立部署的 BGE-M3 服务，返回 dense + sparse。
+    它不替代旧的 ApiEmbeddingProvider，主要用于正式服务器 hybrid 入库。
+    """
+
+    model_name = "BAAI/bge-m3"
+
+    def __init__(
+        self,
+        base_url: str | None = None,
+        timeout: int | None = None,
+        batch_size: int | None = None,
+        vector_size: int | None = None,
+    ) -> None:
+        self.base_url = (base_url or settings.bge_m3_url).rstrip("/")
+        self.timeout = timeout or settings.bge_m3_timeout
+        self.batch_size = batch_size or settings.bge_m3_batch_size
+        self.vector_size = vector_size or settings.embedding_vector_size
+
+    def embed_hybrid_texts(self, texts: Sequence[str]) -> list[HybridEmbedding]:
+        """批量生成 dense + sparse 向量。"""
+
+        clean_texts = [text.strip() for text in texts if text and text.strip()]
+        if not clean_texts:
+            return []
+
+        all_embeddings: list[HybridEmbedding] = []
+        for start in range(0, len(clean_texts), self.batch_size):
+            batch = clean_texts[start : start + self.batch_size]
+            all_embeddings.extend(self._request_embed(batch))
+        return all_embeddings
+
+    def embed_hybrid_text(self, text: str) -> HybridEmbedding:
+        """生成单条文本的 dense + sparse 向量。"""
+
+        embeddings = self.embed_hybrid_texts([text])
+        if not embeddings:
+            raise ValueError("BGE-M3 输入文本为空，无法生成向量")
+        return embeddings[0]
+
+    def _request_embed(self, texts: list[str]) -> list[HybridEmbedding]:
+        """请求 BGE-M3 服务的 /embed 接口。"""
+
+        payload = json.dumps({"texts": texts}).encode("utf-8")
+        request = url_request.Request(
+            url=f"{self.base_url}/embed",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with url_request.urlopen(request, timeout=self.timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")
+            raise RuntimeError(f"BGE-M3 服务返回错误：HTTP {exc.code} {detail}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"无法连接 BGE-M3 服务：{self.base_url}") from exc
+
+        results = data.get("results")
+        if not isinstance(results, list):
+            raise ValueError("BGE-M3 服务响应缺少 results 列表")
+        if len(results) != len(texts):
+            raise ValueError(
+                f"BGE-M3 返回数量和输入文本数量不一致：输入 {len(texts)}，返回 {len(results)}"
+            )
+
+        embeddings: list[HybridEmbedding] = []
+        for result in sorted(results, key=lambda item: int(item.get("index", 0))):
+            dense = result.get("dense")
+            sparse = result.get("sparse") or {}
+            indices = sparse.get("indices")
+            values = sparse.get("values")
+
+            if not isinstance(dense, list):
+                raise ValueError("BGE-M3 响应中的 dense 不是列表")
+            if len(dense) != self.vector_size:
+                raise ValueError(f"BGE-M3 dense 维度错误：期望 {self.vector_size}，实际 {len(dense)}")
+            if not isinstance(indices, list) or not isinstance(values, list):
+                raise ValueError("BGE-M3 响应中的 sparse.indices 或 sparse.values 不是列表")
+            if len(indices) != len(values):
+                raise ValueError("BGE-M3 sparse.indices 和 sparse.values 长度不一致")
+
+            embeddings.append(
+                HybridEmbedding(
+                    dense=[float(value) for value in dense],
+                    sparse=SparseEmbedding(
+                        indices=[int(index) for index in indices],
+                        values=[float(value) for value in values],
+                    ),
+                )
+            )
+        return embeddings
 
 
 class FixedEmbeddingProvider(EmbeddingProvider):

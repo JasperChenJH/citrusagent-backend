@@ -11,6 +11,32 @@ from typing import Any
 
 
 @dataclass
+class SparseEmbedding:
+    """BGE-M3 生成的 sparse 稀疏向量。
+
+    Attributes:
+        indices: 稀疏向量中非零 token 的编号列表。
+        values: 每个 token 对应的权重列表，长度必须和 indices 一致。
+    """
+
+    indices: list[int]
+    values: list[float]
+
+
+@dataclass
+class HybridEmbedding:
+    """BGE-M3 生成的 hybrid 向量结果。
+
+    Attributes:
+        dense: dense 语义向量，BGE-M3 默认 1024 维。
+        sparse: sparse 稀疏关键词向量，用于 Qdrant hybrid search。
+    """
+
+    dense: list[float]
+    sparse: SparseEmbedding
+
+
+@dataclass
 class DocumentEntity:
     """MySQL documents 表对应的文档实体。
 
@@ -78,14 +104,18 @@ class KnowledgeChunk:
     Attributes:
         point_id: Qdrant point ID。Qdrant 推荐使用整数或 UUID 字符串。
         text: 当前片段文本，等于 payload.text。
-        vector: 当前片段的 dense 向量。
+        vector: 旧版 dense-only 入库使用的向量。
         payload: 当前片段的结构化信息。
+        dense_vector: BGE-M3 hybrid 入库使用的 dense 向量。
+        sparse_vector: BGE-M3 hybrid 入库使用的 sparse 向量。
     """
 
     point_id: str
     text: str
     vector: list[float]
     payload: ChunkPayload
+    dense_vector: list[float] = field(default_factory=list)
+    sparse_vector: SparseEmbedding | None = None
 
 
 @dataclass
