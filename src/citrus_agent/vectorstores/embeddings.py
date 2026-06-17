@@ -76,12 +76,21 @@ class ApiEmbeddingProvider(EmbeddingProvider):
         return [item.embedding for item in response.data]
 
     def _load_client(self):
-        """懒加载 API 客户端。"""
+        """懒加载 API 客户端。
+
+        本地部署的 embedding 服务（localhost/127.0.0.1）允许 API Key 为空。
+        """
 
         if self._client is not None:
             return self._client
 
-        if not self.api_key or self.api_key == "replace-me":
+        is_local = (
+            "localhost" in self.base_url
+            or "127.0.0.1" in self.base_url
+            or "0.0.0.0" in self.base_url
+        )
+
+        if not is_local and (not self.api_key or self.api_key == "replace-me"):
             raise ValueError("EMBEDDING_API_KEY 不能为空，请在 .env 中配置真实密钥")
 
         try:
@@ -89,7 +98,8 @@ class ApiEmbeddingProvider(EmbeddingProvider):
         except ImportError as exc:
             raise ImportError("使用 embedding API 需要安装 openai") from exc
 
-        self._client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        api_key = self.api_key if self.api_key and self.api_key != "replace-me" else "not-needed"
+        self._client = OpenAI(api_key=api_key, base_url=self.base_url)
         return self._client
 
 
