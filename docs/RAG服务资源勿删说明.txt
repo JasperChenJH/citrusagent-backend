@@ -1,0 +1,44 @@
+请清理磁盘时不要删除以下 RAG 服务相关资源：
+
+1. Docker 容器：
+- qdrant
+- bge-m3-embedder
+- qwen3-reranker-4b
+
+2. Docker 镜像：
+- qdrant/qdrant
+- pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime
+- vllm/vllm-openai:v0.8.5
+
+3. Docker 系统目录：
+- /var/lib/docker
+
+请不要执行：
+
+sudo rm -rf /var/lib/docker
+
+4. 宿主机目录/文件：
+- /home/yunxuan/qdrant_storage
+
+说明：
+这是 Qdrant 向量数据库持久化目录，保存 collection、向量、payload、WAL 等数据。
+删除该目录会导致知识库向量数据丢失，RAG 检索无法命中已入库文档。
+
+- /data/models
+
+说明：
+这是 BGE-M3 和 Qwen3-Reranker-4B 的模型文件目录。
+删除该目录会导致 embedding 服务和 reranker 服务无法启动，或者需要重新下载模型。
+
+- /data/rag_services/bge_m3_server.py
+
+说明：
+这是 BGE-M3 HTTP embedding 服务脚本，bge-m3-embedder 容器启动时会挂载该文件。
+删除该文件会导致 BGE-M3 embedding 服务无法正常启动。
+
+5. 对应服务端口：
+- Qdrant: 6333/6334
+- BGE-M3 embedding: 8001
+- Qwen3-Reranker-4B: 8002
+
+
