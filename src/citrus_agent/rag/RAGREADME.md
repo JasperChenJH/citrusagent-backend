@@ -9,6 +9,7 @@
 - 文本分块
 - 调用 embedding 模型生成向量
 - 写入 Qdrant
+- 调用服务器 BGE-M3 服务生成 dense + sparse 并写入 hybrid collection
 - 从 Qdrant 检索相关 chunk
 - 按 `document_id` 或 `kb_id` 删除 Qdrant 中的向量
 
@@ -94,7 +95,46 @@ DocumentIngestResult(
 - 成功：`status = ready`，写入 `chunk_count`
 - 失败：`status = failed`，写入 `error_message`
 
-## 三、Qdrant payload 字段
+## 三、服务器 BGE-M3 Hybrid 入库流程
+
+如果需要使用甲方服务器上的 BGE-M3 服务入库，调用：
+
+```python
+from src.citrus_agent.rag.rag_api import RAGApi
+
+api = RAGApi()
+result = api.ingest_document_with_bge_m3(document)
+```
+
+这条链路会调用：
+
+```text
+BGE_M3_URL=http://172.21.72.18:8001
+```
+
+并写入 hybrid collection：
+
+```text
+orange_knowledge_hybrid
+```
+
+写入 Qdrant 的 point 包含：
+
+```text
+dense vector
+sparse vector
+payload
+```
+
+原来的本地入库入口仍然保留：
+
+```python
+api.ingest_document(document)
+```
+
+因此本地测试可以继续使用 `text-embedding-v4` dense-only 流程，服务器正式入库再使用 `ingest_document_with_bge_m3()`。
+
+## 四、Qdrant payload 字段
 
 第一版 payload 只保留最小字段：
 
@@ -120,7 +160,7 @@ text
 | `chunk_index` | 当前文档内的 chunk 序号 |
 | `text` | chunk 正文，后续会拼进 LLM prompt |
 
-## 四、删除单个文档向量
+## 五、删除单个文档向量
 
 后端删除某个文档时，可以调用：
 
@@ -135,7 +175,18 @@ api.delete_document_vectors(document_id=12)
 
 它不会删除 MySQL 中的 `documents` 记录。
 
-## 五、删除整个知识库向量
+如果删除 BGE-M3 hybrid collection 中的文档向量，调用：
+
+```python
+from src.citrus_agent.rag.rag_api import RAGApi
+
+api = RAGApi()
+api.delete_document_vectors_from_bge_m3(document_id=12)
+```
+
+这个方法只会删除 `orange_knowledge_hybrid` 中 `payload.document_id == 12` 的 points。
+
+## 六、删除整个知识库向量
 
 后端删除知识库时，可以调用：
 
@@ -150,7 +201,18 @@ api.delete_knowledge_base_vectors(kb_id=3)
 
 它不会删除 MySQL 中的 `knowledge_bases` 或 `documents` 记录。
 
-## 六、检索指定知识库
+如果删除 BGE-M3 hybrid collection 中某个知识库的全部向量，调用：
+
+```python
+from src.citrus_agent.rag.rag_api import RAGApi
+
+api = RAGApi()
+api.delete_knowledge_base_vectors_from_bge_m3(kb_id=3)
+```
+
+这个方法只会删除 `orange_knowledge_hybrid` 中 `payload.kb_id == 3` 的 points。
+
+## 七、检索指定知识库
 
 如果用户当前选择了某个知识库，推荐传入 `kb_id`，避免不同知识库之间串数据。
 
@@ -172,7 +234,7 @@ result = api.search(
 {"kb_id": 3}
 ```
 
-## 七、不加过滤检索
+## 八、不加过滤检索
 
 如果只是本地测试，或者后台管理搜索，可以不传 `kb_id`。
 
@@ -191,7 +253,7 @@ result = api.search(
 
 正式用户问答如果有明确知识库，建议优先传 `kb_id`。
 
-## 八、检索返回结构
+## 九、检索返回结构
 
 `api.search()` 返回 `DocumentSearchResult`。
 
@@ -239,7 +301,7 @@ DocumentSearchResult(
 | `score` | 当前 chunk 的向量相似度分数 |
 | `payload` | Qdrant 中保存的完整 payload |
 
-## 九、拼接 Prompt 的建议
+## 十、拼接 Prompt 的建议
 
 后端或 LLM 层拿到检索结果后，可以直接使用：
 
@@ -257,7 +319,7 @@ for chunk in result.chunks:
     chunk_index = chunk.payload.get("chunk_index")
 ```
 
-## 十、当前文件职责
+## 十一、当前文件职责
 
 | 文件 | 职责 |
 | --- | --- |
@@ -284,7 +346,7 @@ src/citrus_agent/services/document_parser.py
 src/citrus_agent/services/knowledge_service.py
 ```
 
-## 十一、注意事项
+## 十二、注意事项
 
 - RAG 模块不保存 MySQL 账号密码。
 - RAG 模块不直接连接 MySQL。
@@ -293,3 +355,6 @@ src/citrus_agent/services/knowledge_service.py
 - 重新入库同一文档时，默认会先按 `document_id` 删除旧向量，再写入新向量。
 - 删除知识库向量时，只会按 `kb_id` 删除 Qdrant points，不会删除 MySQL 数据。
 - 当前没有 rerank，返回顺序就是 Qdrant 向量检索返回顺序。
+- `orange_knowledge` 是旧版 dense-only collection。
+- `orange_knowledge_hybrid` 是 BGE-M3 dense + sparse collection。
+- 如果 hybrid 入库报 `Not existing vector name error: sparse`，通常是 hybrid collection 被误创建成 dense-only，需要删除 `orange_knowledge_hybrid` 后重新入库。

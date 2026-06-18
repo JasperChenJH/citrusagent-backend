@@ -1,7 +1,12 @@
 from pathlib import Path
 
-from src.citrus_agent.pojo.knowledge import DocumentEntity, DocumentIngestResult
-from src.citrus_agent.services.knowledge_service import KnowledgeIngestor
+from src.citrus_agent.pojo.knowledge import (
+    DocumentEntity,
+    DocumentIngestResult,
+    HybridEmbedding,
+    SparseEmbedding,
+)
+from src.citrus_agent.services.knowledge_service import HybridKnowledgeIngestor, KnowledgeIngestor
 from src.citrus_agent.vectorstores.embeddings import FixedEmbeddingProvider
 
 
@@ -17,6 +22,27 @@ class FakeQdrantStore:
         self.deleted_document_ids.append(document_id)
 
     def upsert_chunks(self, chunks) -> None:
+        self.chunks.extend(chunks)
+
+
+class FakeHybridEmbeddingProvider:
+    vector_size = 4
+
+    def embed_hybrid_texts(self, texts):
+        return [
+            HybridEmbedding(
+                dense=[1.0, 0.0, 0.0, 0.0],
+                sparse=SparseEmbedding(indices=[1, 2], values=[0.8, 0.2]),
+            )
+            for _ in texts
+        ]
+
+
+class FakeHybridQdrantStore(FakeQdrantStore):
+    def delete_by_document_id_from_hybrid(self, document_id: int) -> None:
+        self.deleted_document_ids.append(document_id)
+
+    def upsert_hybrid_chunks(self, chunks) -> None:
         self.chunks.extend(chunks)
 
 
@@ -93,3 +119,51 @@ def test_ingest_document_returns_failure_result() -> None:
     assert result.success is False
     assert result.chunk_count == 0
     assert "文件不存在" in result.error_message
+
+
+def test_hybrid_ingest_document_sets_dense_sparse_and_keeps_payload(tmp_path: Path) -> None:
+    file_path = tmp_path / "砂糖橘溃疡病.md"
+    file_path.write_text(
+        "砂糖橘溃疡病在雨季容易发生，需要清理病叶并加强排水。",
+        encoding="utf-8",
+    )
+    document = DocumentEntity(
+        id=12,
+        kb_id=3,
+        original_filename="砂糖橘溃疡病.md",
+        stored_path=str(file_path),
+        file_size=file_path.stat().st_size,
+        file_hash="fake-hash",
+        mime_type="text/markdown",
+        status="pending",
+    )
+    store = FakeHybridQdrantStore()
+    ingestor = HybridKnowledgeIngestor(
+        embedding_provider=FakeHybridEmbeddingProvider(),
+        qdrant_store=store,
+        chunk_size=20,
+        chunk_overlap=5,
+    )
+
+    result = ingestor.ingest_document(document)
+
+    assert isinstance(result, DocumentIngestResult)
+    assert result.document_id == 12
+    assert result.kb_id == 3
+    assert result.success is True
+    assert result.chunk_count >= 1
+    assert store.deleted_document_ids == [12]
+    assert store.chunks[0].dense_vector == [1.0, 0.0, 0.0, 0.0]
+    assert store.chunks[0].sparse_vector.indices == [1, 2]
+    assert store.chunks[0].sparse_vector.values == [0.8, 0.2]
+
+    payload = store.chunks[0].payload.to_dict()
+    assert set(payload.keys()) == {
+        "chunk_id",
+        "kb_id",
+        "document_id",
+        "file_name",
+        "page",
+        "chunk_index",
+        "text",
+    }

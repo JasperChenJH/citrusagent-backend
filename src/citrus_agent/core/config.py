@@ -99,7 +99,29 @@ class Settings(BaseSettings):
     bge_m3_timeout: int = Field(default=60, description="BGE-M3 服务请求超时时间，单位秒")
     bge_m3_batch_size: int = Field(default=8, description="调用 BGE-M3 服务时的默认批大小")
 
+    qwen_reranker_url: str = Field(
+        default="http://172.21.72.18:8002",
+        description="Qwen3-Reranker-4B 服务地址，vLLM score 接口所在服务",
+    )
+    qwen_reranker_model: str = Field(
+        default="qwen3-reranker-4b",
+        description="Qwen3-Reranker-4B 在 vLLM 中暴露的模型名称",
+    )
+    qwen_reranker_timeout: int = Field(
+        default=60,
+        description="Qwen reranker 请求超时时间，单位秒",
+    )
+    qwen_reranker_batch_size: int = Field(
+        default=16,
+        description="Qwen reranker 每次打分的候选片段数量",
+    )
+
     retrieval_top_k: int = Field(default=30, description="Qdrant 第一阶段召回数量")
+    hybrid_dense_top_k: int = Field(default=40, description="Hybrid 检索 dense 召回数量")
+    hybrid_sparse_top_k: int = Field(default=40, description="Hybrid 检索 sparse 召回数量")
+    hybrid_candidate_top_k: int = Field(default=25, description="RRF 融合后进入 rerank 的候选数量")
+    hybrid_final_top_k: int = Field(default=8, description="Qwen rerank 后最终返回数量")
+    hybrid_rrf_k: int = Field(default=60, description="RRF 融合公式中的平滑常数")
     chunk_size: int = Field(default=500, description="知识片段目标字符数")
     chunk_overlap: int = Field(default=80, description="相邻知识片段重叠字符数")
 

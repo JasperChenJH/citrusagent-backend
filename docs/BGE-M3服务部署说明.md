@@ -125,13 +125,13 @@ backend-api
 
 ## 六、启动 BGE-M3 容器
 
-在服务器上执行：
+如果服务器有多张 GPU，建议指定一张空闲 GPU。比如甲方服务器上 GPU 1 空闲时，使用：
 
 ```bash
-docker run -d \
+sudo docker run -d \
   --name bge-m3-embedder \
   --network rag-net \
-  --gpus all \
+  --gpus '"device=1"' \
   --ipc=host \
   -p 8001:8000 \
   -v /data/models/huggingface:/root/.cache/huggingface \
@@ -147,13 +147,15 @@ docker run -d \
   bash -lc "pip install -U FlagEmbedding fastapi uvicorn transformers accelerate && uvicorn bge_m3_server:app --host 0.0.0.0 --port 8000 --app-dir /app"
 ```
 
+容器内部只会看到分配给它的 GPU，所以容器内显示 `GPU 0` 是正常现象。
+
 ### 命令解释
 
 | 参数 | 说明 |
 | --- | --- |
 | `--name bge-m3-embedder` | 容器名称 |
 | `--network rag-net` | 加入 RAG 专用 Docker 网络 |
-| `--gpus all` | 允许容器使用 GPU |
+| `--gpus '"device=1"'` | 只使用宿主机 GPU 1，避免占用其他任务的 GPU |
 | `--ipc=host` | 提高 PyTorch 多进程/共享内存稳定性 |
 | `-p 8001:8000` | 宿主机 8001 映射到容器内 8000 |
 | `/data/models/huggingface:/root/.cache/huggingface` | 挂载模型缓存目录 |
@@ -167,6 +169,37 @@ docker run -d \
 | `BGE_M3_MAX_BATCH_SIZE=64` | 单次请求最多文本条数 |
 
 第一次启动会下载模型和安装依赖，时间会比较久。
+
+### 推荐的稳定启动方式：本地模型路径
+
+如果自动下载模型遇到 `403` 或坏缓存，推荐先把模型下载到宿主机：
+
+```text
+/data/models/bge-m3
+```
+
+然后用本地路径启动：
+
+```bash
+sudo docker run -d \
+  --name bge-m3-embedder \
+  --network rag-net \
+  --gpus '"device=1"' \
+  --ipc=host \
+  -p 8001:8000 \
+  -v /data/models:/data/models \
+  -v /data/rag_services/bge_m3_server.py:/app/bge_m3_server.py:ro \
+  -e BGE_M3_MODEL_NAME=/data/models/bge-m3 \
+  -e BGE_M3_DEVICE=cuda \
+  -e BGE_M3_USE_FP16=true \
+  -e BGE_M3_BATCH_SIZE=8 \
+  -e BGE_M3_MAX_LENGTH=8192 \
+  -e BGE_M3_MAX_BATCH_SIZE=64 \
+  pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime \
+  bash -lc "pip install -U torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124 && pip install -U FlagEmbedding fastapi uvicorn transformers accelerate && uvicorn bge_m3_server:app --host 0.0.0.0 --port 8000 --app-dir /app"
+```
+
+这里升级 `torch==2.6.0` 是为了避免加载 `.bin` 权重时触发 `torch.load` 安全限制。
 
 ## 七、查看容器状态
 
@@ -336,6 +369,66 @@ curl http://127.0.0.1:8001/health
 ### 5. 每次启动都 pip install 很慢
 
 当前命令为了简单，启动时会安装依赖。正式部署时可以后续制作自定义镜像，把依赖提前打进镜像里。
+
+### 6. HuggingFace 镜像 403，卡在 imgs/.DS_Store
+
+如果日志里出现：
+
+```text
+403 Forbidden
+imgs/.DS_Store
+```
+
+说明镜像站下载模型仓库里的无关文件失败。处理方式是手动下载模型并忽略 `imgs` 文件夹：
+
+```bash
+sudo rm -rf /data/models/bge-m3
+sudo mkdir -p /data/models/bge-m3
+sudo chown -R yunxuan:yunxuan /data/models
+```
+
+```bash
+sudo docker run --rm \
+  -v /data/models:/data/models \
+  -e HF_ENDPOINT=https://hf-mirror.com \
+  -e HF_HUB_DISABLE_XET=1 \
+  pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime \
+  bash -lc "pip install -U 'huggingface_hub<1.0' && python -c \"from huggingface_hub import snapshot_download; snapshot_download(repo_id='BAAI/bge-m3', local_dir='/data/models/bge-m3', local_dir_use_symlinks=False, ignore_patterns=['imgs/*','*.DS_Store','.DS_Store'])\""
+```
+
+下载完成后检查：
+
+```bash
+ls -lh /data/models/bge-m3
+du -sh /data/models/bge-m3
+```
+
+至少应包含：
+
+```text
+config.json
+model.safetensors 或 pytorch_model.bin
+tokenizer.json
+tokenizer_config.json
+sentencepiece.bpe.model
+```
+
+### 7. torch.load 安全限制
+
+如果日志里出现：
+
+```text
+Due to a serious vulnerability issue in torch.load
+require users to upgrade torch to at least v2.6
+```
+
+说明当前容器里的 PyTorch 版本太低。启动命令里需要先升级：
+
+```bash
+pip install -U torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+```
+
+上面的“本地模型路径”启动命令已经包含该处理。
 
 ## 十三、当前部署结果
 

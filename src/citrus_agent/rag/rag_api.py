@@ -7,12 +7,13 @@
 
 from __future__ import annotations
 
+from src.citrus_agent.core.config import settings
 from src.citrus_agent.pojo.knowledge import (
     DocumentEntity,
     DocumentIngestResult,
     DocumentSearchResult,
 )
-from src.citrus_agent.rag.retriever import CitrusRetriever
+from src.citrus_agent.rag.retriever import CitrusRetriever, HybridCitrusRetriever
 from src.citrus_agent.services.knowledge_service import HybridKnowledgeIngestor, KnowledgeIngestor
 from src.citrus_agent.vectorstores.qdrant import QdrantStore
 
@@ -32,12 +33,19 @@ class RAGApi:
         ingestor: KnowledgeIngestor | None = None,
         hybrid_ingestor: HybridKnowledgeIngestor | None = None,
         retriever: CitrusRetriever | None = None,
+        hybrid_retriever: HybridCitrusRetriever | None = None,
         qdrant_store: QdrantStore | None = None,
     ) -> None:
         self.ingestor = ingestor or KnowledgeIngestor()
         self.hybrid_ingestor = hybrid_ingestor
         self.retriever = retriever or CitrusRetriever()
+        self.hybrid_retriever = hybrid_retriever
         self.qdrant_store = qdrant_store or QdrantStore()
+
+    def _create_hybrid_qdrant_store(self) -> QdrantStore:
+        """创建指向 BGE-M3 hybrid collection 的 QdrantStore。"""
+
+        return QdrantStore(collection_name=settings.qdrant_hybrid_collection)
 
     def ingest_document(
         self,
@@ -89,6 +97,20 @@ class RAGApi:
         self.qdrant_store.delete_by_document_id(document_id)
         return True
 
+    def delete_document_vectors_from_bge_m3(self, document_id: int) -> bool:
+        """删除一个文档在 BGE-M3 hybrid collection 中的所有 chunk 向量。
+
+        Args:
+            document_id: MySQL documents.id。
+
+        Returns:
+            bool: 删除调用成功返回 True；异常会向上抛出，方便后端统一处理。
+        """
+
+        hybrid_store = self._create_hybrid_qdrant_store()
+        hybrid_store.delete_by_document_id_from_hybrid(document_id)
+        return True
+
     def delete_knowledge_base_vectors(self, kb_id: int) -> bool:
         """删除一个知识库在 Qdrant 中的所有 chunk 向量。
 
@@ -100,6 +122,20 @@ class RAGApi:
         """
 
         self.qdrant_store.delete_by_kb_id(kb_id)
+        return True
+
+    def delete_knowledge_base_vectors_from_bge_m3(self, kb_id: int) -> bool:
+        """删除一个知识库在 BGE-M3 hybrid collection 中的所有 chunk 向量。
+
+        Args:
+            kb_id: MySQL knowledge_bases.id。
+
+        Returns:
+            bool: 删除调用成功返回 True；异常会向上抛出，方便后端统一处理。
+        """
+
+        hybrid_store = self._create_hybrid_qdrant_store()
+        hybrid_store.delete_by_kb_id_from_hybrid(kb_id)
         return True
 
     def search(
@@ -126,6 +162,43 @@ class RAGApi:
             filters=filters,
         )
         actual_top_k = top_k or getattr(self.retriever, "top_k", len(chunks))
+        best_score = max((chunk.score for chunk in chunks), default=0.0)
+        return DocumentSearchResult(
+            kb_id=kb_id,
+            query_text=query_text,
+            top_k=actual_top_k,
+            score=best_score,
+            chunks=chunks,
+        )
+
+    def search_with_bge_m3_rerank(
+        self,
+        query_text: str,
+        top_k: int | None = None,
+        kb_id: int | None = None,
+    ) -> DocumentSearchResult:
+        """使用 BGE-M3 hybrid search + Qwen reranker 检索知识片段。
+
+        这是给正式服务器链路使用的新查询入口，旧的 search() 不受影响。
+        流程为：BGE-M3 生成 dense+sparse 查询向量 -> Qdrant 双路召回 ->
+        RRF 融合候选 -> Qwen3-Reranker-4B 重排 -> 返回最终片段。
+
+        Args:
+            query_text: 用户问题。
+            top_k: 最终返回片段数量，建议 5 到 8。
+            kb_id: 知识库 ID，传入时只检索该知识库。
+
+        Returns:
+            DocumentSearchResult: 检索返回实体，chunks 中的 score 是 rerank 分数。
+        """
+
+        hybrid_retriever = self.hybrid_retriever or HybridCitrusRetriever()
+        chunks = hybrid_retriever.search(
+            query_text=query_text,
+            top_k=top_k,
+            kb_id=kb_id,
+        )
+        actual_top_k = top_k or getattr(hybrid_retriever, "final_top_k", len(chunks))
         best_score = max((chunk.score for chunk in chunks), default=0.0)
         return DocumentSearchResult(
             kb_id=kb_id,

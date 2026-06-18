@@ -10,7 +10,7 @@ import uuid
 from typing import Any
 
 from src.citrus_agent.core.config import settings
-from src.citrus_agent.pojo.knowledge import KnowledgeChunk
+from src.citrus_agent.pojo.knowledge import KnowledgeChunk, SparseEmbedding
 
 
 class QdrantStore:
@@ -216,6 +216,30 @@ class QdrantStore:
             ),
         )
 
+    def delete_by_kb_id_from_hybrid(self, kb_id: int) -> None:
+        """按 kb_id 删除 hybrid collection 中的所有片段。
+
+        该方法用于 BGE-M3 dense + sparse collection，避免误把 hybrid collection
+        创建成 dense-only collection。
+        """
+
+        from qdrant_client import models
+
+        self.ensure_hybrid_collection()
+        self.client.delete(
+            collection_name=self.collection_name,
+            points_selector=models.FilterSelector(
+                filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="kb_id",
+                            match=models.MatchValue(value=kb_id),
+                        )
+                    ]
+                )
+            ),
+        )
+
     def search(
         self,
         query_vector: list[float],
@@ -260,10 +284,95 @@ class QdrantStore:
             )
         return results
 
+    def search_hybrid_dense(
+        self,
+        query_vector: list[float],
+        top_k: int = 40,
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """在 hybrid collection 中使用 dense 向量召回。
+
+        该方法只查询 named vector `dense`，用于 BGE-M3 hybrid 检索的第一路召回。
+        """
+
+        self.ensure_hybrid_collection()
+        return self._query_points(
+            query=query_vector,
+            using=self.dense_vector_name,
+            top_k=top_k,
+            filters=filters,
+        )
+
+    def search_hybrid_sparse(
+        self,
+        sparse_vector: SparseEmbedding,
+        top_k: int = 40,
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """在 hybrid collection 中使用 sparse 向量召回。
+
+        该方法只查询 named vector `sparse`，用于关键词/词面匹配召回。
+        """
+
+        from qdrant_client import models
+
+        self.ensure_hybrid_collection()
+        return self._query_points(
+            query=models.SparseVector(
+                indices=sparse_vector.indices,
+                values=sparse_vector.values,
+            ),
+            using=self.sparse_vector_name,
+            top_k=top_k,
+            filters=filters,
+        )
+
     def build_point_id(self, chunk_id: str) -> str:
         """把业务 chunk_id 转成 Qdrant 可接受的稳定 UUID。"""
 
         return str(uuid.uuid5(uuid.NAMESPACE_URL, chunk_id))
+
+    def _query_points(
+        self,
+        query: Any,
+        using: str | None,
+        top_k: int,
+        filters: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """执行 Qdrant query_points 并统一返回字典结构。"""
+
+        qdrant_filter = self._build_filter(filters or {})
+
+        if hasattr(self.client, "query_points"):
+            response = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query,
+                using=using,
+                query_filter=qdrant_filter,
+                limit=top_k,
+                with_payload=True,
+            )
+            points = getattr(response, "points", response)
+        else:
+            points = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query,
+                query_filter=qdrant_filter,
+                limit=top_k,
+                with_payload=True,
+            )
+
+        results: list[dict[str, Any]] = []
+        for point in points:
+            payload = dict(point.payload or {})
+            results.append(
+                {
+                    "id": str(point.id),
+                    "score": float(point.score),
+                    "payload": payload,
+                }
+            )
+        return results
 
     def _create_client(self):
         """创建 Qdrant 客户端。"""
